@@ -4,9 +4,9 @@
 #include <SoftwareSerial.h>
 #include <ctype.h>
 
-#define bit9600Delay 84  
+#define bit9600Delay 84
 #define halfBit9600Delay 42
-#define bit4800Delay 188 
+#define bit4800Delay 188
 #define halfBit4800Delay 94
 
 // These are commands we need to send to HSHT15 to control it
@@ -17,28 +17,29 @@ char cmd = 0;
 int ack;
 
 // For the clock.
-int dateTimePin=10; //chip select 
+int dateTimePin=10; //chip select
 // For hum. temp.
 int htDataPin = 2;
 int htClockPin = 3;
-// Serial Display.  
+// Serial Display.
 int displayRx = 14;
 int displayTx = 15;
 
-int loggerRx = 16;
-int loggerTx = 17;
-int loggerReset = 18;
-
 int fanPin1 = 9;
 int heatPin1 = 4;
-int heatPin2 = 5;
-int coolPin = 6;
 
-double targetTemp = 91;
-double tempVariance = .1;
+int heatValue = 0;
+
+double targetTemp = 91.1;
+
+
+bool cool= false;
+bool coolOn= false;
+bool heat= false;
+bool heatOn= false;
+bool fanOn= false;
 
 SoftwareSerial serial(displayRx, displayTx);
-SoftwareSerial logger(loggerRx, loggerTx);
 
 // Initiates a function command to the display
 void serCommand() {
@@ -87,7 +88,7 @@ void selectLineOne() { //puts the cursor at line 0 char 0.
 
 // Starts the cursor at the beginning of the second line (convienence method for goTo(16))
 void selectLineTwo() { //puts the cursor at line 0 char 0.
-	serCommand(); //command flagb   
+	serCommand(); //command flagb
 	serial.write(192); //position
 }
 
@@ -109,16 +110,14 @@ void backlightOff() {
 	serial.write(128);
 }
 
-int times = 0;
-
 int RTC_init() {
 	pinMode(dateTimePin, OUTPUT); // chip select
 	// start the SPI library:
 
 	SPI.begin();
 	SPI.setBitOrder(MSBFIRST);
-	SPI.setDataMode(SPI_MODE3); // both mode 1 & 3 should work 
-	//set control register 
+	SPI.setDataMode(SPI_MODE3); // both mode 1 & 3 should work
+	//set control register
 	digitalWrite(dateTimePin, LOW);
 	SPI.transfer(0x8E);
 	SPI.transfer(0x60); //60= disable Osciallator and Battery SQ wave @1hz, temp compensation, Alarms disabled
@@ -154,47 +153,42 @@ int SetTimeDate(int d, int mo, int y, int h, int mi, int s) {
 
 void setup() {
 
-	pinMode(loggerTx, OUTPUT);
-	pinMode(loggerRx, INPUT);
-
 	pinMode(fanPin1, OUTPUT);
 	pinMode(heatPin1, OUTPUT); // set pin to input
-	pinMode(heatPin2, OUTPUT); // set pin to input
-	pinMode(coolPin, OUTPUT); // set pin to input
-
-	analogWrite(9, HIGH);
 
 	digitalWrite(heatPin1, HIGH); // turn on pullup resistors (Heat off.)
-	digitalWrite(heatPin2, HIGH); // turn on pullup resistors (Heat off.)
-	digitalWrite(coolPin, HIGH); // turn on pullup resistors (Cool off.)
-
 
 	serial.begin(9600);
-	logger.begin(9600);
+
 	Serial.begin(9600);
 
 	delay(1000);
 
 	RTC_init();
 
-	//SetTimeDate(2, 13, 13, 17, 28, 0);
-	//backlightOn();
+	backlightOn();
 	clearLCD();
 }
 
 //=====================================
 String ReadTimeDate() {
 	String time = "";
-	int TimeDate [7]; //second,minute,hour,null,day,month,year		
+
+	int TimeDate [7]; //second,minute,hour,null,day,month,year
 	for (int i=0; i<=6; i++) {
+		TimeDate[i] = 0;
+	}
+
+	for (int i=0; i<=6; i++) {
+
 		if (i==3)
 			i++;
+
 		digitalWrite(dateTimePin, LOW);
 		SPI.transfer(i+0x00);
+
 		unsigned int n = SPI.transfer(0x00);
 		digitalWrite(dateTimePin, HIGH);
-
-		//delay(100);
 
 		int a = n & B00001111;
 		if (i==2) {
@@ -218,33 +212,36 @@ String ReadTimeDate() {
 			TimeDate[i]=a+b*10;
 		}
 	}
+
 	time.concat("20") ;
-	time.concat(TimeDate[6]);
+	time.concat(String(TimeDate[6], DEC));
 	time.concat("-") ;
 	if (TimeDate[5] < 10) {
 		time.concat("0") ;
 	}
-	time.concat(TimeDate[5]);
+
+	time.concat(String(TimeDate[5], DEC));
 	time.concat("-") ;
 
 	if (TimeDate[4] < 10) {
 		time.concat("0") ;
 	}
 
-	time.concat(TimeDate[4]);
+	time.concat(String(TimeDate[4], DEC));
 
 	time.concat(" ");
 
 	if (TimeDate[2] < 10) {
 		time.concat(" ") ;
 	}
-	time.concat(TimeDate[2]);
+
+	time.concat(String(TimeDate[2], DEC));
 	time.concat(":") ;
 	if (TimeDate[1] < 10) {
 		time.concat("0") ;
 	}
 
-	time.concat(TimeDate[1]);
+	time.concat(String(TimeDate[1], DEC));
 
 	return (time);
 }
@@ -384,26 +381,23 @@ int readHumidity() {
 	return humid;
 }
 
-bool cool= false;
-bool coolOn= false;
-bool heat= false;
-bool heatOn= false;
-bool fanOn= false;
-
 void turnHeatOn() {
-	coolOn = false;
-	if (heatOn) {
-		return;
+
+	if (heatValue == 0) {
+		heatValue += 100;
+	} else if (heatValue < 150) {
+		heatValue += 20;
+	} else if (heatValue < 200) {
+		heatValue += 10;
+	} else if (heatValue < 255) {
+		heatValue += 5;
 	}
 
-	digitalWrite(coolPin, HIGH);
+	if (heatValue > 255) {
+		heatValue = 255;
+	}
 
-	delay(500);
-
-	digitalWrite(heatPin2, LOW);
-	digitalWrite(heatPin1, LOW);
-
-	fanOn = true;
+	analogWrite(heatPin1, heatValue);
 
 	heatOn = true;
 
@@ -415,30 +409,26 @@ void turnCoolOn() {
 		return;
 	}
 	digitalWrite(heatPin1, HIGH);
-	digitalWrite(heatPin2, HIGH);
 
-	//	delay(500);
-	//	digitalWrite(coolPin, LOW);
-	//	digitalWrite(heatPin1, LOW);
 	fanOn = true;
 	coolOn = true;
 
 }
 
-void turnHeatAndCoolOff() {
-	if (heatOn) {
-		digitalWrite(heatPin1, HIGH);
-		digitalWrite(heatPin2, HIGH);
-		heatOn = false;
-	}
-	if (coolOn) {
-		digitalWrite(coolPin, HIGH);
-		coolOn = false;
-	}
+void turnHeatOff() {
 
-	if (fanOn) {
-		//
-		fanOn = false;
+//	heatValue -= 20;
+//
+//	if (heatValue < 0) {
+//		heatValue = 0;
+//	}
+	
+	heatValue = 0;
+
+	digitalWrite(heatPin1, heatValue);
+
+	if (heatValue == 0) {
+		heatOn = false;
 	}
 
 }
@@ -446,24 +436,14 @@ void turnHeatAndCoolOff() {
 void loop() {
 
 	String dateTime = ReadTimeDate();
+
 	double temperature = readTemp();
+
 	int humidity = readHumidity();
 
-	Serial.println(dateTime);
-
-	delay(50);
 	selectLineOne();
-	serial.print(dateTime);
-	delay(50);
 
-	logger.print(dateTime);
-	logger.print("\t");
-	logger.print(times);
-	logger.print("\t");
-	logger.print(temperature);
-	logger.print("\t");
-	logger.print(String(humidity, DEC));
-	logger.println("\n");
+	serial.print(dateTime);
 
 	selectLineTwo();
 
@@ -475,33 +455,104 @@ void loop() {
 
 	serial.print(String(humidity, DEC));
 
-	double targetMin = targetTemp - tempVariance;
-	double targetMax = targetTemp + tempVariance;
-
-	if (temperature > targetMax) {
-		turnCoolOn();
-
-		serial.print(" OFF ");
-		//serial.print(" COOL");
-
-	}
-
-	if (temperature < targetMin) {
+	if (temperature < targetTemp) {
 
 		turnHeatOn();
-		serial.print(" HEAT");
+		serial.print("   ");
+	}
+
+	if (temperature> targetTemp) {
+
+		turnHeatOff();
+		serial.print("   ");
 
 	}
 
-	if (temperature > (targetMin + tempVariance) && temperature < (targetMax)) {
+	
 
-		turnHeatAndCoolOff();
-		serial.print(" OFF ");
+	if (heatValue < 100) {
+		serial.print(" ");
+	}
+	if (heatValue < 10) {
+			serial.print(" ");
+	}
+	if (heatValue <= 0) {
+		serial.print("0");
 
+	} else {
+
+		serial.print(String(heatValue, DEC) );
 	}
 
-	times ++;
-	delay(500);
+	delay(250);
+
+	//	if (Serial.available() > 0) {
+	//
+	//		int index = 0;
+	//		char inData[20];
+	//
+	//		for (int i = 0; i < 20; i++) {
+	//			inData[i] = '\0';
+	//		}
+	//
+	//		char inChar = -1;
+	//
+	//		String timeArray[7];
+	//
+	//		for (int i = 0; i < 7; i++) {
+	//			timeArray[i] = "";
+	//		}
+	//
+	//		while (Serial.available() > 0) // Don't read unless
+	//		{
+	//
+	//			if (index < 19) // One less than the size of the array
+	//			{
+	//				inChar = Serial.read(); // Read a character
+	//				inData[index] = inChar; // Store it
+	//				index++; // Increment where to write next
+	//				inData[index] = '\0'; // Null terminate the string
+	//			}
+	//
+	//			if (index == 17) {
+	//				Serial.println("MATCH");
+	//
+	//				String date = String(inData);
+	//
+	//				int space = date.indexOf(" ");
+	//
+	//				if (space != -1) {
+	//
+	//					int timeIndex = 0;
+	//
+	//					while (space > -1) {
+	//
+	//						timeArray[timeIndex] = date.substring(0, space);
+	//						date = date.substring(space+1, date.length());
+	//						timeIndex++;
+	//
+	//						space = date.indexOf(" ");
+	//					}
+	//
+	//					for (int i = 0; i < 7; i++) {
+	//						Serial.println(timeArray[i]);
+	//					}
+	//
+	//					int day = timeArray[0].toInt();
+	//					int month = timeArray[1].toInt();
+	//					int year = timeArray[2].toInt();
+	//					int hour = timeArray[3].toInt();
+	//					int minute = timeArray[4].toInt();
+	//
+	//					SetTimeDate(day, month, year, hour, minute, 0);
+	//
+	//				}
+	//
+	//			}
+	//
+	//			//SetTimeDate(2, 13, 14, 17, 28, 0);
+	//		}
+	//
+	//	}
 
 }
-
